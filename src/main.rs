@@ -3,6 +3,10 @@ use argh::FromArgs;
 use std::fs;
 use std::io;
 
+const ONE_PARAMETER: i32 = 1;
+const TWO_PARAMETERS: i32 = 2;
+const THREE_PARAMETERS: i32 = 3;
+
 #[derive(Debug, Clone)]
 struct Machine{
     memory: Vec<i32>,
@@ -11,7 +15,18 @@ struct Machine{
 }
 
 impl Machine{
-    fn new(data: Vec<i32>) -> Machine{
+
+    //Read code and load data in memory
+    fn new(filename: String) -> Machine{
+
+        let data: String = fs::read_to_string(filename)
+            .expect("No file selected")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+
+        let data: Vec<_> = data.split(',').map(|x| x.parse::<i32>().unwrap()).collect();
+
         Machine {
             memory: data,
             instruction_ptr: 0,
@@ -29,9 +44,9 @@ impl Machine{
         }).sum();
 
         let ptr_to_result = self.ptr_to_value(3, &param_modes);
-        self.memory[ptr_to_result] = sum;
+        self.update_mem(ptr_to_result, sum);
 
-        3
+        THREE_PARAMETERS
     }
 
     //Like 1, but for multiplication.
@@ -43,9 +58,9 @@ impl Machine{
         }).product();
 
         let ptr_to_result = self.ptr_to_value(3, &param_modes);
-        self.memory[ptr_to_result] = res;
+        self.update_mem(ptr_to_result, res);
 
-        3
+        THREE_PARAMETERS
     }
 
     //Inputs a single integer and stores it in the first argument.
@@ -58,9 +73,9 @@ impl Machine{
         let value: i32 = line.trim().parse().expect("Input not an integer");
 
         let ptr_to_result = self.ptr_to_value(1, &param_modes);
-        self.memory[ptr_to_result] = value;
+        self.update_mem(ptr_to_result, value);
 
-        1
+        ONE_PARAMETER
     }
 
     //Outputs the first argument.
@@ -70,7 +85,7 @@ impl Machine{
 
         print!("{}", out_val as u8 as char);
 
-        1
+        ONE_PARAMETER
     }
 
     //If the first argument is non-zero, sets the instruction pointer to second argument.
@@ -82,10 +97,10 @@ impl Machine{
 
             self.instruction_ptr = self.memory[ptr_arg2] as usize;
 
-            return -1
+            return -ONE_PARAMETER
         }
 
-        2
+        TWO_PARAMETERS
     }
 
     //Like 5, but jumps if the first argument is zero.
@@ -97,10 +112,10 @@ impl Machine{
 
             self.instruction_ptr = self.memory[ptr_arg2] as usize;
 
-            return -1
+            return -ONE_PARAMETER
         }
 
-        2
+        TWO_PARAMETERS
     }
 
     //If the first argument is less than the second argument, writes 1 to the third argument. Otherwise, writes 0.
@@ -110,12 +125,12 @@ impl Machine{
         let ptr_arg3 = self.ptr_to_value(3, &param_modes);
 
         if self.memory[ptr_arg1] < self.memory[ptr_arg2] {
-            self.memory[ptr_arg3] = 1;
+            self.update_mem(ptr_arg3, 1);
         }else{
-            self.memory[ptr_arg3] = 0;
+            self.update_mem(ptr_arg3, 0);
         }
 
-        3
+        THREE_PARAMETERS
     }
 
     //Like 7, but check equality instead.
@@ -125,29 +140,30 @@ impl Machine{
         let ptr_arg3 = self.ptr_to_value(3, &param_modes);
 
         if self.memory[ptr_arg1] == self.memory[ptr_arg2] {
-            self.memory[ptr_arg3] = 1;
+            self.update_mem(ptr_arg3, 1);
         }else{
-            self.memory[ptr_arg3] = 0;
+            self.update_mem(ptr_arg3, 0);
         }
 
-        3
+        THREE_PARAMETERS
     }
 
     //Adds the first argument to the relative base register.
     fn add_to_rbr(&mut self, param_modes: Vec<i32>) -> i32{
         let ptr_arg1 = self.ptr_to_value(1, &param_modes);
         self.rel_base_ptr = (self.rel_base_ptr as i32 + self.memory[ptr_arg1]) as usize;
-        1
+        ONE_PARAMETER
     }
     
 
+    //Separate and return the parameter modes from the data
     fn parameter_modes(&self, data: i32) -> Vec<i32>{
         let mut num = data/100;
         let mut params = vec![0, 0, 0];
 
-        for i in 0..3{
-            params[i] = num % 10;
-            num = num/10;
+        for item in params.iter_mut().take(3){
+            *item = num % 10;
+            num /= 10;
         }
 
         params
@@ -161,7 +177,8 @@ impl Machine{
         Mode 1, immediate mode: the parameter is the value read. (This mode is never used for writing.)
         Mode 2, relative mode: the parameter is added to the relative base register to obtain the address of the cell to be read or written.
     */
-    fn ptr_to_value(&self, arg_num: usize, param_modes: &Vec<i32>) -> usize{
+    //Always returns the pointer to the value needed by the calling function
+    fn ptr_to_value(&self, arg_num: usize, param_modes: &[i32]) -> usize{
         let argument_index = self.instruction_ptr + arg_num;
         let argument_value = self.memory[argument_index];
 
@@ -173,6 +190,19 @@ impl Machine{
         }
     }
 
+    //Safely updates a memory address
+    fn update_mem(&mut self, ptr: usize, value: i32){
+        let max_index = self.memory.len() - 1;
+
+        if ptr > max_index{
+            for _ in 0..ptr-max_index{
+                self.memory.push(0);
+            }
+        }
+
+        self.memory[ptr] = value;
+    }
+
     //Executes the program saved in self.memory
     fn execute(&mut self){
         loop{
@@ -181,7 +211,10 @@ impl Machine{
             let opcode = data % 100;
             let param_modes = self.parameter_modes(data);
 
-            //Match every opcode with the corresponding function
+            /*
+            Match every opcode with the corresponding function and
+            get the number of addresses to skip due to the parameters
+            */
             let skip = match opcode {
                 1 => self.add(param_modes),
                 2 => self.multiply(param_modes),
@@ -196,29 +229,22 @@ impl Machine{
                 _ => panic!("Opcode not recognized: op{}, addr {}", self.memory[self.instruction_ptr], self.instruction_ptr)
             };
 
+            //Update the instruction pointer
             self.instruction_ptr = (self.instruction_ptr as i32 + skip + 1) as usize;
-            //println!();
         }
     }
 }
 
 fn main() {
     let options: ConfigOptions = argh::from_env();
-    let data: String = fs::read_to_string(options.filename)
-        .expect("No file selected")
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
 
-    let data: Vec<_> = data.split(",").map(|x| x.parse::<i32>().unwrap()).collect();
-
-    let mut interpreter = Machine::new(data);
+    let mut interpreter = Machine::new(options.filename);
 
     interpreter.execute();
 }
 
 #[derive(FromArgs)]
-///Intcode interpreter
+///An Intcode interpreter
 struct ConfigOptions{
     #[argh(option, short = 'f')]
     ///name of intcode file.
